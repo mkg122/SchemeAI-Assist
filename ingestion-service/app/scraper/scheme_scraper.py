@@ -1,18 +1,29 @@
 from playwright.sync_api import sync_playwright
 
-BASE_URL = "https://www.myscheme.gov.in"
+SCHEME_PORTAL_URL = "https://www.myscheme.gov.in"
 
+def extract_scheme_name(page):
+    scheme_selectors = [
+        "#scrollDiv h1",          
+        "div[role='main'] h1"                
+    ]
 
-def parse_scheme_detail(context, url):
+    for selector in scheme_selectors:
+        scheme_loc = page.locator(selector)
+        if scheme_loc.count() > 0:
+            first_element = scheme_loc.first
+            scheme_name = first_element.get_attribute("title") or first_element.inner_text()
+            if scheme_name:
+                return scheme_name.strip()
+    return ""
+
+def parse_scheme_data(context, url, ministry):
     page = context.new_page()
-    print("\n\n Test 1 \n\n")
-    page.goto(url, timeout=60000)
-    page.wait_for_selector("h1")
-
-    print("\n\n Test 2 \n\n")
+    print(f"Loading scheme page: {url}")
+    
     data = {
         "scheme_name": "",
-        "ministry": "",
+        "ministry": ministry,
         "details": "",
         "benefits": "",
         "eligibility": "",
@@ -22,140 +33,87 @@ def parse_scheme_detail(context, url):
         "states": ""
     }
 
-    # Title
-    title = page.locator("h1").first
-    if title.count() > 0:
-        data["scheme_name"] = title.inner_text().strip()
+    try:
+        page.goto(url, wait_until="networkidle", timeout=60000)
+        
+        page.wait_for_selector("#scrollDiv", timeout=15000)
 
-    # Ministry
-    ministry = page.locator("h2").first
-    if ministry.count() > 0:
-        data["ministry"] = ministry.inner_text().strip()
+        data["scheme_name"] = extract_scheme_name(page)
+                    
+        section_map = {
+            "details": "details",
+            "benefits": "benefits",
+            "eligibility": "eligibility",
+            "application-process": "application_process",
+            "documents-required": "documents_required",
+            "exclusions": "exclusions"
+        }
 
-    # Sections
-    sections = page.locator("h2, h3")
-    count = sections.count()
+        for element_id, data_key in section_map.items():
+            section_locator = page.locator(f"#{element_id}")
+            if section_locator.count() > 0:
+                data[data_key] = section_locator.inner_text().strip()
 
-    print(f"\n\n Test 3 : {count} \n\n")
-    for i in range(count):
-        section = sections.nth(i)
-        heading = section.inner_text().strip().lower()
-        # print("\n\n Test 4 \n\n")
-        try:
-            # Find parent section using closest div with id
-            parent_section = section.locator("xpath=ancestor::div[@id][1]")
-
-            section_id = parent_section.get_attribute("id") if parent_section.count() else ""
-
-            if section_id:
-                content_container = page.locator(f"#{section_id} .markdown-options")
-
-                if content_container.count() > 0:
-                    content = content_container.first.inner_text().strip()
-                else:
-                    content = ""
-            else:
-                content = ""
-
-        except Exception as e:
-            print("Error:", e)
-            content = ""
-
-        if not content:
-            continue
-        # print(content)
-        if "benefit" in heading:
-            data["benefits"] = content
-        elif "eligib" in heading:
-            data["eligibility"] = content
-        elif "application" in heading or "apply" in heading:
-            data["application_process"] = content
-        elif "document" in heading:
-            data["documents_required"] = content
-        elif "exclusion" in heading:
-            data["exclusions"] = content
-        elif "state" in heading:
-            data["states"] = content
-        elif "detail" in heading or "about" in heading or "description" in heading:
-            data["details"] = content
-
-    page.close()
-    print("\n\n Test 1 \n\n")
-    print(data)
+    except Exception as e:
+        print(f"Error parsing {url}: {e}")
+    finally:
+        page.close()
     return data
-
 
 def fetch_schemes():
     all_schemes = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=True) 
         context = browser.new_context()
         page = context.new_page()
 
-        page.goto(f"{BASE_URL}/search/ministry/all-ministries", timeout=60000)
+        ministries_url = f"{SCHEME_PORTAL_URL}/search/ministry/all-ministries"
+        print(f"Navigating to {ministries_url}")
+        page.goto(ministries_url, timeout=60000)
         page.wait_for_selector("#ministryBasedSchemes")
 
-        cards = page.locator("#ministryBasedSchemes > div")
-        total_cards = cards.count()
+        ministries_count = page.locator("#ministryBasedSchemes > div").count()
+        print(f"Found {ministries_count} ministries.")
 
-        for i in range(total_cards):
-            print(f"Processing ministry {i+1}/{total_cards}")
-
-            if i==1:
-                break
+        for i in range(ministries_count):
+            print(f"\nProcessing ministry {i+1}/{ministries_count}")
+            
+            page.wait_for_selector("#ministryBasedSchemes > div", timeout=15000)
+            cards = page.locator("#ministryBasedSchemes > div")
             card = cards.nth(i)
-            ministry_name = card.get_attribute("title")
-
+            
+            ministry_name = card.get_attribute("title") or "Unknown Ministry"
+            print(f"Ministry: {ministry_name}")
+            
             card.click()
-
+            
             page.wait_for_selector("div[role='article']", timeout=15000)
-
             scheme_cards = page.locator("div[role='article']")
             scheme_count = scheme_cards.count()
-
+            
+            print(f"Found {scheme_count} schemes for {ministry_name}")
+            
+            scheme_urls = []
             for j in range(scheme_count):
-                scheme = scheme_cards.nth(j)
+                link = scheme_cards.nth(j).locator("a[href^='/schemes/']")
+                if link.count() > 0:
+                    href = link.first.get_attribute("href")
+                    if href:
+                        scheme_urls.append(SCHEME_PORTAL_URL + href)
 
-                link = scheme.locator("a[href^='/schemes/']")
-                if link.count() == 0:
-                    continue
-
-                href = link.first.get_attribute("href")
-                if not href:
-                    continue
-
-                full_url = BASE_URL + href
-
-                try:
-                    print(f"  Scraping: {full_url}")
-                    data = parse_scheme_detail(context, full_url)
-
-                    if not data["ministry"]:
-                        data["ministry"] = ministry_name
-
-                    all_schemes.append(data)
-
-                except Exception as e:
-                    print(f"  Error: {e}")
-                    continue
-
+            for scheme_url in scheme_urls:
+                data = parse_scheme_data(context, scheme_url, ministry_name)
+                all_schemes.append(data)
+            
             page.go_back()
-            page.wait_for_selector("#ministryBasedSchemes")
+            page.wait_for_selector("#ministryBasedSchemes", timeout=15000)
 
         browser.close()
+        
+    return unique_scheme(all_schemes)
 
-    # Deduplicate
+
+def unique_scheme(all_schemes):
     unique = {s["scheme_name"]: s for s in all_schemes if s["scheme_name"]}
     return list(unique.values())
-
-
-if __name__ == "__main__":
-    schemes = fetch_schemes()
-
-    print(f"\nTotal schemes scraped: {len(schemes)}")
-
-    for s in schemes[:3]:
-        print("\n----------------------")
-        for k, v in s.items():
-            print(f"{k}: {v}")
